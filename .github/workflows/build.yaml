@@ -51,18 +51,23 @@ jobs:
             type=sha
             type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Cache Docker layers
+      - name: Cache Go modules and build cache
         uses: actions/cache@v6
         with:
-          path: go-build-cache
-          key: ${{ runner.os }}-go-build-cache-${{ hashFiles('**/go.sum') }}
+          path: |
+            go-mod-cache
+            go-build-cache
+          key: ${{ runner.os }}-go-cache-${{ hashFiles('**/go.sum') }}
 
-      - name: inject go-build-cache into docker
-        # v1 was composed of two actions: "inject" and "extract".
-        # v2 is unified to a single action.
+      # Moves the cache dirs into/out of the Dockerfile's RUN --mount=type=cache targets.
+      - name: Inject Go caches into Docker
         uses: reproducible-containers/buildkit-cache-dance@v3.4.0
         with:
-          cache-source: go-build-cache
+          cache-map: |
+            {
+              "go-mod-cache": "/root/go/pkg/mod",
+              "go-build-cache": "/root/.cache/go-build"
+            }
 
       - name: Login to GitHub Container Registry
         if: ${{ inputs.push }}
