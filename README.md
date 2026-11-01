@@ -99,7 +99,7 @@ curl localhost:8080/readyz
 
 ## Deploying with Docker
 
-[`deployments/docker/production`](deployments/docker/production) runs the published image (`xblaz3kx/homebox-analytics`) with Postgres, Qdrant and optionally Ollama. It expects Homebox to already be running elsewhere.
+[`deployments/docker/production`](deployments/docker/production) runs the published image (`ghcr.io/xblaz3kx/homebox-analytics`) with Postgres, Qdrant and optionally Ollama. It expects Homebox to already be running elsewhere.
 
 ```bash
 cd deployments/docker/production

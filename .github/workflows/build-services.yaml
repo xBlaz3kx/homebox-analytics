@@ -30,6 +30,9 @@ on:
 
 jobs:
   build-service:
+    permissions:
+      contents: read
+      packages: write
     name: "Build and Push service"
     uses: ./.github/workflows/build.yaml
     with:
@@ -37,5 +40,4 @@ jobs:
       push: ${{ github.event_name != 'pull_request' }}
       docker_repository: homebox-analytics
       dockerfile: "./build/service/Dockerfile"
-    secrets: inherit
 
