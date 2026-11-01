@@ -1,7 +1,12 @@
-with-expecter: True
-dir: mocks/{{ .InterfaceDirRelative }}
-mockname: "Mock{{.InterfaceName}}"
-outpkg: "{{.PackageName}}"
+all: true
+dir: "{{.InterfaceDir}}/mocks"
+structname: "Mock{{.InterfaceName}}"
+pkgname: mocks
 filename: "{{.InterfaceName|snakecase}}_mock.go"
-all: True
+template: testify
+template-data:
+  unroll-variadic: true
 packages:
+  github.com/xBlaz3kx/homebox-analytics/internal/service/catalog: {}
+  github.com/xBlaz3kx/homebox-analytics/internal/service/ledger: {}
+  github.com/xBlaz3kx/homebox-analytics/internal/service/analytics: {}

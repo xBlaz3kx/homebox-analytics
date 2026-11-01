@@ -1,0 +1,47 @@
+http:
+  address: ":8080"
+
+homebox:
+  url: "http://homebox:7745"
+  # Prefer an API key (Homebox > Profile > API keys); username/password also works.
+  api_key: ""
+  username: ""
+  password: ""
+  # Custom fields whose values are treated as product codes (in addition to model/serial/asset ID).
+  code_fields: ["EAN", "UPC", "Barcode", "GTIN", "SKU"]
+
+postgres:
+  dsn: "postgres://homebox:homebox@postgres:5432/homebox_analytics?sslmode=disable"
+
+qdrant:
+  host: "qdrant"
+  port: 6334
+  collection: "homebox_items"
+
+# Any OpenAI-compatible /v1/embeddings endpoint.
+embeddings:
+  # Ollama directly:
+  base_url: "http://ollama:11434/v1"
+  model: "nomic-embed-text"
+  # Through Bifrost (docker compose --profile bifrost):
+  # base_url: "http://bifrost:8080/v1"
+  # model: "ollama/nomic-embed-text"
+  batch_size: 32
+
+sync:
+  interval: 10m
+
+matching:
+  # Cosine similarity the top hybrid hit needs to be treated as a confident match,
+  # and the lead it needs over the runner-up.
+  min_similarity: 0.75
+  min_margin: 0.03
+
+observability:
+  enabled: true
+  service_name: "homebox-analytics"
+  environment: "dev"
+  endpoint: "otel-lgtm:4317"
+  protocol: "grpc"
+  insecure: true
+  sample_ratio: 1.0

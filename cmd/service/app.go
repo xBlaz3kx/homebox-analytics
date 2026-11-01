@@ -1,24 +1,34 @@
 package main
 
 import (
+	"context"
+	"os"
+	"os/signal"
+	"syscall"
+
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 	"go.uber.org/zap"
 )
+
+// version is set at build time via -ldflags "-X main.version=...".
+var version = "dev"
 
 var (
 	configurationFilePathFlag string
 
 	rootCmd = &cobra.Command{
-		Use:   "service",
-		Short: "Example service",
-		Long:  ``,
-		Run: func(cmd *cobra.Command, args []string) {
-			// configuration.InitConfig(configurationFilePathFlag)
+		Use:   "homebox-analytics",
+		Short: "Consumable usage tracking and analytics for Homebox",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			cfg, err := loadConfig(configurationFilePathFlag)
+			if err != nil {
+				return err
+			}
 
-			// appConfiguration := configuration.GetConfiguration()
+			ctx, stop := signal.NotifyContext(cmd.Context(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
 
-			// service.Run(appConfiguration)
+			return run(ctx, cfg, version, zap.L())
 		},
 	}
 )
@@ -26,19 +36,12 @@ var (
 func init() {
 	logger, _ := zap.NewProduction()
 	zap.ReplaceGlobals(logger)
-	setupFlags()
-}
 
-func setupFlags() {
-	// Setup flags
 	rootCmd.PersistentFlags().StringVar(&configurationFilePathFlag, "config", "", "config file path")
-
-	// Bind flags to viper
-	_ = viper.BindPFlag("tracing.enable", rootCmd.PersistentFlags().Lookup("tracing"))
 }
 
 func main() {
-	if err := rootCmd.Execute(); err != nil {
+	if err := rootCmd.ExecuteContext(context.Background()); err != nil {
 		zap.L().Fatal("Unable to run", zap.Error(err))
 	}
 }
