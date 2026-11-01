@@ -1,0 +1,21 @@
+{
+  "client": {
+    "drop_excess_requests": false
+  },
+  "providers": {
+    "ollama": {
+      "keys": [
+        {
+          "name": "ollama-local",
+          "value": "dummy",
+          "models": ["*"],
+          "weight": 1.0
+        }
+      ],
+      "network_config": {
+        "base_url": "http://ollama:11434",
+        "allow_private_network": true
+      }
+    }
+  }
+}

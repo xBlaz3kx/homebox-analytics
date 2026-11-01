@@ -1,0 +1,80 @@
+# Self-hosted deployment: the published image plus Postgres, Qdrant and (optionally) Ollama.
+# Homebox runs elsewhere. Copy .env.example to .env, fill it in, then:
+#   docker compose up -d
+name: homebox-analytics
+
+services:
+  service:
+    image: ${HBA_IMAGE:-xblaz3kx/homebox-analytics}:${HBA_IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "${HBA_PORT:-8080}:8080"
+    environment:
+      HBA_HOMEBOX_URL: ${HBA_HOMEBOX_URL:?set HBA_HOMEBOX_URL in .env}
+      HBA_HOMEBOX_API_KEY: ${HBA_HOMEBOX_API_KEY:-}
+      HBA_HOMEBOX_USERNAME: ${HBA_HOMEBOX_USERNAME:-}
+      HBA_HOMEBOX_PASSWORD: ${HBA_HOMEBOX_PASSWORD:-}
+      HBA_HOMEBOX_CODE_FIELDS: ${HBA_HOMEBOX_CODE_FIELDS:-EAN,UPC,Barcode,GTIN,SKU}
+      HBA_POSTGRES_DSN: postgres://homebox:${POSTGRES_PASSWORD}@postgres:5432/homebox_analytics?sslmode=disable
+      HBA_QDRANT_HOST: qdrant
+      HBA_QDRANT_PORT: 6334
+      HBA_EMBEDDINGS_BASE_URL: ${HBA_EMBEDDINGS_BASE_URL:-http://ollama:11434/v1}
+      HBA_EMBEDDINGS_API_KEY: ${HBA_EMBEDDINGS_API_KEY:-}
+      HBA_EMBEDDINGS_MODEL: ${HBA_EMBEDDINGS_MODEL:-nomic-embed-text}
+      HBA_SYNC_INTERVAL: ${HBA_SYNC_INTERVAL:-10m}
+      HBA_MATCHING_MIN_SIMILARITY: ${HBA_MATCHING_MIN_SIMILARITY:-0.75}
+      HBA_MATCHING_MIN_MARGIN: ${HBA_MATCHING_MIN_MARGIN:-0.03}
+      HBA_OBSERVABILITY_ENABLED: ${HBA_OBSERVABILITY_ENABLED:-false}
+      HBA_OBSERVABILITY_ENDPOINT: ${HBA_OBSERVABILITY_ENDPOINT:-}
+      HBA_OBSERVABILITY_PROTOCOL: ${HBA_OBSERVABILITY_PROTOCOL:-grpc}
+      HBA_OBSERVABILITY_ENVIRONMENT: ${HBA_OBSERVABILITY_ENVIRONMENT:-production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      # Only present with the "ollama" profile; skipped when embeddings come from elsewhere.
+      ollama-pull:
+        condition: service_completed_successfully
+        required: false
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: homebox
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: homebox_analytics
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U homebox -d homebox_analytics"]
+      interval: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.5
+    restart: unless-stopped
+    volumes:
+      - qdrant:/qdrant/storage
+
+  ollama:
+    image: ollama/ollama:${OLLAMA_IMAGE_TAG:-latest}
+    profiles: ["ollama"]
+    restart: unless-stopped
+    volumes:
+      - ollama:/root/.ollama
+
+  ollama-pull:
+    image: ollama/ollama:${OLLAMA_IMAGE_TAG:-latest}
+    profiles: ["ollama"]
+    environment:
+      OLLAMA_HOST: ollama:11434
+    entrypoint: ["ollama", "pull", "${HBA_EMBEDDINGS_MODEL:-nomic-embed-text}"]
+    depends_on:
+      - ollama
+
+volumes:
+  postgres:
+  qdrant:
+  ollama:

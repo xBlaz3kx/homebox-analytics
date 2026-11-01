@@ -5,3 +5,5 @@
 
 .DS_Store
 .golangci.yml
+# Deployment secrets
+.env

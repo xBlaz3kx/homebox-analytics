@@ -1,22 +1,102 @@
-version: "3.9"
 services:
   service:
-    container_name: "service"
+    container_name: homebox-analytics
     restart: on-failure
-    image: "service:latest"
+    image: homebox-analytics:latest
     build:
       context: ../..
       dockerfile: ./build/service/Dockerfile
       target: app
+    command: ["--config", "/usr/local/service/config.yaml"]
     environment:
-      - SERVICE_ENV=dev
-      - SERVICE_DEBUG=true
-    healthcheck:
-      test: curl --fail http://localhost:80/healthz || exit 1
-      start_period: 10s
-      interval: 10s
-      retries: 3
-      timeout: 5s
-
+      # Secrets via env, e.g. HBA_HOMEBOX_API_KEY=... docker compose up
+      - HBA_HOMEBOX_API_KEY=${HBA_HOMEBOX_API_KEY:-}
+      - HBA_HOMEBOX_USERNAME=${HBA_HOMEBOX_USERNAME:-}
+      - HBA_HOMEBOX_PASSWORD=${HBA_HOMEBOX_PASSWORD:-}
+    ports:
+      - "8080:8080"
     volumes:
-      - ../../config/service.config.yaml:/usr/service/config/config.yaml
+      - ../../config/service.config.yaml:/usr/local/service/config.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+      ollama-pull:
+        condition: service_completed_successfully
+
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: homebox
+      POSTGRES_PASSWORD: homebox
+      POSTGRES_DB: homebox_analytics
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U homebox -d homebox_analytics"]
+      interval: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:v1.15.5
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant:/qdrant/storage
+
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+
+  # Pulls the embedding model once so the service can start embedding immediately.
+  ollama-pull:
+    image: ollama/ollama:latest
+    environment:
+      - OLLAMA_HOST=ollama:11434
+    entrypoint: ["ollama", "pull", "nomic-embed-text"]
+    depends_on:
+      - ollama
+
+  # Optional LLM gateway in front of Ollama: docker compose --profile bifrost up
+  # then point embeddings.base_url at http://bifrost:8080/v1 and use model "ollama/nomic-embed-text".
+  bifrost:
+    image: maximhq/bifrost:latest
+    profiles: ["bifrost"]
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./bifrost:/app/data
+
+  # Grafana + Tempo + Loki + Prometheus with an OTLP endpoint; UI on http://localhost:3000
+  otel-lgtm:
+    image: grafana/otel-lgtm:latest
+    ports:
+      - "3000:3000"
+      - "4317:4317"
+      - "4318:4318"
+
+  # Local Homebox for development: docker compose --profile homebox up
+  homebox:
+    image: ghcr.io/sysadminsmedia/homebox:latest
+    profiles: ["homebox"]
+    environment:
+      - HBOX_OPTIONS_ALLOW_REGISTRATION=true
+      # Required by Homebox >= 0.27; generate with `openssl rand -base64 48` for anything non-local.
+      - HBOX_AUTH_API_KEY_PEPPER=${HBOX_AUTH_API_KEY_PEPPER:-local-dev-pepper-change-me-0123456789abcdef}
+    ports:
+      - "7745:7745"
+    volumes:
+      - homebox:/data
+
+volumes:
+  postgres:
+  qdrant:
+  ollama:
+  homebox:

@@ -2,7 +2,7 @@ name: "Build and Push service"
 on:
   push:
     branches:
-      - master
+      - main
     paths-ignore:
       - 'docs/**'
       - '.run/**'
@@ -17,7 +17,7 @@ on:
   pull_request:
     types: [ opened, synchronize ]
     branches:
-      - master
+      - main
     paths-ignore:
       - 'docs/**'
       - '.run/**'
@@ -33,9 +33,9 @@ jobs:
     name: "Build and Push service"
     uses: ./.github/workflows/build.yaml
     with:
-      service: user
+      service: homebox-analytics
       push: ${{ github.event_name != 'pull_request' }}
-      docker_repository: service
-      dockerfile: "./build/Dockerfile"
+      docker_repository: homebox-analytics
+      dockerfile: "./build/service/Dockerfile"
     secrets: inherit
 

@@ -1,71 +1,47 @@
-FROM golang:1.21 as build
+FROM golang:1.26-alpine AS build
 
 WORKDIR /app/src
 
-# Add the GitHub access token to the git config for private repositories
-ARG GH_ACCESS_TOKEN
 RUN apk add --no-cache git
-RUN git config --global url.https://${GH_ACCESS_TOKEN}@github.com/.insteadOf https://github.com/
 
-ENV GO111MODULE=on
-ENV CGO_ENABLED=0
-ENV GOOS=linux
-ENV GOARCH=amd64
-
-# Enable caching for go modules and build cache
-ENV GOCACHE=/root/.cache/go-build
-ENV GOMODCACHE=/root/.cache/go-build
+ENV CGO_ENABLED=0 \
+    GOOS=linux \
+    GOCACHE=/root/.cache/go-build \
+    GOMODCACHE=/root/go/pkg/mod
 
 # Leverage build cache by copying go.mod and go.sum first
 COPY go.mod go.sum ./
-RUN --mount=type=cache,target=/root/.cache/go-build go mod download
-RUN go mod verify
+RUN --mount=type=cache,target=/root/go/pkg/mod go mod download && go mod verify
 
-# Copy the rest of the source code
 COPY . .
 
-RUN --mount=type=cache,target="/root/.cache/go-build" go build -o ../service ./cmd/service
+ARG VERSION=dev
+RUN --mount=type=cache,target=/root/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    go build -ldflags "-s -w -X main.version=${VERSION}" -o /app/service ./cmd/service
 
 # Debug stage using Delve
-FROM build as debug
+FROM build AS debug
 
-COPY --from=build /app/src /service/src
-
-WORKDIR /service/src
-
-# Build Delve
 RUN go install github.com/go-delve/delve/cmd/dlv@latest
+RUN go build -gcflags="all=-N -l" -o /app/service-debug ./cmd/service
 
-RUN go build -gcflags="all=-N -l" -o ./service ./cmd/service
+CMD ["/root/go/bin/dlv", "--listen=:40000", "--headless=true", "--api-version=2", "--accept-multiclient", "exec", "/app/service-debug"]
 
-CMD ["/go/bin/dlv", "--listen=:40000", "--headless=true", "--api-version=2", "--accept-multiclient", "exec", "./service"]
+FROM alpine:3.22 AS app
 
-FROM alpine as app
-
-# Add curl for health checks
-RUN apk --update --no-cache add curl
-
-SHELL ["/bin/sh", "-l", "-c"]
+# curl for health checks, tzdata for chart bucket timezones
+RUN apk --update --no-cache add curl tzdata
 
 ARG user=app
-ARG group=docker
-
-RUN addgroup $group
-RUN adduser \
-    --disabled-password \
-    --gecos "" \
-    --ingroup $group \
-    $user
+ARG group=app
+RUN addgroup -S $group && adduser -S -G $group -H -D $user
 
 COPY --chown=$user:$group --from=build /app/service /usr/local/bin/service
-
-RUN chmod +x /usr/local/bin/service
 
 USER $user
 WORKDIR /usr/local/service
 
-# Todo add health check
+EXPOSE 8080
+HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=3 CMD curl --fail http://localhost:8080/healthz || exit 1
 
-# Todo expose port
-
-CMD ["/usr/local/bin/service"]
+ENTRYPOINT ["/usr/local/bin/service"]

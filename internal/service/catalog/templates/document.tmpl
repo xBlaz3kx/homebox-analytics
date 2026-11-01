@@ -1,0 +1,9 @@
+{{- .Name }}
+{{- with .Manufacturer }}
+Manufacturer: {{ . }}{{ end }}
+{{- with .ModelNumber }}
+Model: {{ . }}{{ end }}
+{{- with .Tags }}
+Categories: {{ join . ", " }}{{ end }}
+{{- with .Description }}
+{{ . }}{{ end }}

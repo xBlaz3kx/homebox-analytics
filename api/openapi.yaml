@@ -1,14 +1,436 @@
 openapi: 3.0.3
 info:
-  title: Service
-  description: Service
+  title: Homebox Analytics
+  description: |
+    Tracks purchases and consumption of Homebox items, resolves scanned codes to items
+    (exact code lookup with hybrid semantic/lexical fallback), reconciles counted stock with
+    Homebox, and serves chart-ready time series.
   version: 1.0.0
 servers:
-  - url: 'https'
+  - url: http://localhost:8080
 paths:
   /healthz:
-    description: Healthcheck endpoint
     get:
+      summary: Liveness
       responses:
-        200:
-          description: Healthy
+        '200':
+          description: Alive
+  /readyz:
+    get:
+      summary: Readiness of Postgres, Qdrant, Homebox and the embeddings API
+      responses:
+        '200':
+          description: All dependencies ready
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: { type: string }
+        '503':
+          description: At least one dependency is unavailable
+
+  /api/v1/items/lookup:
+    get:
+      summary: Resolve a code and/or free text to Homebox items
+      description: |
+        Order: learned/manual code links (vendor-specific first), codes stored on Homebox items
+        (custom code fields, model/serial number, asset ID), then hybrid search over item text.
+        With only a code and no exact hit, the code itself is used as search text.
+      parameters:
+        - { name: code, in: query, schema: { type: string }, description: EAN/UPC/GTIN or vendor code }
+        - { name: vendor, in: query, schema: { type: string }, description: Scopes vendor-specific code links }
+        - { name: q, in: query, schema: { type: string }, description: Free text, e.g. a receipt line }
+        - { name: limit, in: query, schema: { type: integer, default: 5 } }
+      responses:
+        '200':
+          description: Match result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/LookupResult' }
+        '400': { $ref: '#/components/responses/Error' }
+
+  /api/v1/items/{id}/codes:
+    get:
+      summary: List codes linked to an item
+      parameters: [ { $ref: '#/components/parameters/ItemID' } ]
+      responses:
+        '200':
+          description: Code links
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/CodeLink' } }
+
+  /api/v1/codes:
+    post:
+      summary: Link a code (optionally vendor-scoped) to an item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, item_id]
+              properties:
+                code: { type: string }
+                vendor: { type: string }
+                item_id: { type: string }
+                source: { type: string, enum: [manual, learned], default: manual }
+      responses:
+        '201':
+          description: Link stored
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/CodeLink' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/v1/codes/{id}:
+    delete:
+      summary: Remove a code link
+      parameters:
+        - { name: id, in: path, required: true, schema: { type: string } }
+      responses:
+        '204': { description: Deleted }
+        '404': { $ref: '#/components/responses/Error' }
+
+  /api/v1/items/{id}/events:
+    post:
+      summary: Record a purchase, consumption or adjustment and update the Homebox quantity
+      parameters: [ { $ref: '#/components/parameters/ItemID' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/EventInput' }
+      responses:
+        '201':
+          description: Event recorded
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Event' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+        '409': { $ref: '#/components/responses/Error' }
+    get:
+      summary: List an item's events (newest first)
+      parameters:
+        - { $ref: '#/components/parameters/ItemID' }
+        - { $ref: '#/components/parameters/From' }
+        - { $ref: '#/components/parameters/To' }
+        - { name: limit, in: query, schema: { type: integer, default: 100 } }
+      responses:
+        '200':
+          description: Events
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Event' } }
+
+  /api/v1/scan:
+    post:
+      summary: Resolve a code/text and record an event in one call
+      description: |
+        Records the event only for a confident match; otherwise responds 409 with the candidates
+        in `data.match` so the client can choose an item. With `learn: true`, a confident hybrid
+        match links the code to the item so the next scan is exact.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              allOf:
+                - $ref: '#/components/schemas/EventInput'
+                - type: object
+                  properties:
+                    code: { type: string }
+                    vendor: { type: string }
+                    text: { type: string }
+                    learn: { type: boolean, default: false }
+      responses:
+        '201':
+          description: Event recorded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  match: { $ref: '#/components/schemas/LookupResult' }
+                  event: { $ref: '#/components/schemas/Event' }
+                  link: { $ref: '#/components/schemas/CodeLink' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /api/v1/items/{id}/reconcile:
+    post:
+      summary: Compare a counted quantity with Homebox, optionally applying it
+      parameters: [ { $ref: '#/components/parameters/ItemID' } ]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [counted]
+              properties:
+                counted: { type: number, minimum: 0 }
+                apply: { type: boolean, default: false }
+                note: { type: string }
+      responses:
+        '200':
+          description: Reconciliation
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Reconciliation' }
+        '400': { $ref: '#/components/responses/Error' }
+        '404': { $ref: '#/components/responses/Error' }
+  /api/v1/reconcile:
+    post:
+      summary: Batch reconcile (stock-take); each item succeeds or fails independently
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [items]
+              properties:
+                items:
+                  type: array
+                  items:
+                    type: object
+                    required: [item_id, counted]
+                    properties:
+                      item_id: { type: string }
+                      counted: { type: number, minimum: 0 }
+                      apply: { type: boolean }
+                      note: { type: string }
+      responses:
+        '200':
+          description: Per-item results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        item_id: { type: string }
+                        reconciliation: { $ref: '#/components/schemas/Reconciliation' }
+                        error: { type: string }
+  /api/v1/reconciliations:
+    get:
+      summary: List reconciliations (newest first)
+      parameters:
+        - { name: item_id, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, default: 100 } }
+      responses:
+        '200':
+          description: Reconciliations
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Reconciliation' } }
+
+  /api/v1/charts:
+    get:
+      summary: Time series for items and/or categories
+      description: |
+        Scope is the union of `items` and all current members of `categories` (Homebox tags,
+        read live). `categories=all` selects every tag and defaults `group_by` to `category`.
+        With `group_by=category`, an item counts toward each selected category it carries;
+        when only items are given, their own tags are used. Items without a matching tag are
+        grouped under `uncategorized`.
+      parameters:
+        - { name: items, in: query, schema: { type: array, items: { type: string } }, style: form, explode: false, description: Item IDs (comma-separated or repeated) }
+        - { name: categories, in: query, schema: { type: array, items: { type: string } }, style: form, explode: false, description: Tag IDs or `all` }
+        - { name: group_by, in: query, schema: { type: string, enum: [item, category, total], default: item } }
+        - { name: metric, in: query, schema: { $ref: '#/components/schemas/Metric' } }
+        - { name: interval, in: query, schema: { $ref: '#/components/schemas/Interval' } }
+        - { $ref: '#/components/parameters/From' }
+        - { $ref: '#/components/parameters/To' }
+        - { name: timezone, in: query, schema: { type: string, default: UTC }, description: IANA zone for bucket boundaries }
+      responses:
+        '200':
+          description: Chart
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Chart' }
+        '400': { $ref: '#/components/responses/Error' }
+    post:
+      summary: Same as GET with a JSON body (for long ID lists)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                items: { type: array, items: { type: string } }
+                categories: { type: array, items: { type: string } }
+                group_by: { type: string, enum: [item, category, total] }
+                metric: { $ref: '#/components/schemas/Metric' }
+                interval: { $ref: '#/components/schemas/Interval' }
+                from: { type: string, format: date-time }
+                to: { type: string, format: date-time }
+                timezone: { type: string }
+      responses:
+        '200':
+          description: Chart
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Chart' }
+        '400': { $ref: '#/components/responses/Error' }
+
+  /api/v1/sync:
+    post:
+      summary: Sync Homebox items into the search index now
+      responses:
+        '200':
+          description: Sync stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  seen: { type: integer }
+                  upserted: { type: integer }
+                  touched: { type: integer }
+                  unchanged: { type: integer }
+                  deleted: { type: integer }
+                  duration_ns: { type: integer }
+
+components:
+  parameters:
+    ItemID:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+      description: Homebox item (entity) ID
+    From:
+      name: from
+      in: query
+      schema: { type: string }
+      description: RFC3339 or YYYY-MM-DD (inclusive); charts default to 12 months before `to`
+    To:
+      name: to
+      in: query
+      schema: { type: string }
+      description: RFC3339 or YYYY-MM-DD (exclusive); defaults to now
+
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string }
+              data: {}
+
+  schemas:
+    Metric:
+      type: string
+      enum: [consumed, purchased, spend, quantity, events]
+      default: consumed
+      description: |
+        consumed = consume events plus negative reconciliation deltas; purchased = purchased units;
+        spend = purchased units x unit_price; quantity = stock level carried forward; events = count.
+    Interval:
+      type: string
+      enum: [day, week, month, quarter, year]
+      default: week
+    Candidate:
+      type: object
+      properties:
+        item_id: { type: string }
+        name: { type: string }
+        tags: { type: array, items: { type: string } }
+        location: { type: string }
+        score: { type: number, description: Fused rank score (1 for exact matches) }
+        similarity: { type: number, description: Cosine similarity to the query (hybrid only) }
+    LookupResult:
+      type: object
+      properties:
+        match_type: { type: string, enum: [exact, hybrid, none] }
+        confident: { type: boolean }
+        code:
+          type: object
+          properties:
+            value: { type: string }
+            type: { type: string, enum: [ean13, ean8, other] }
+        candidates: { type: array, items: { $ref: '#/components/schemas/Candidate' } }
+    CodeLink:
+      type: object
+      properties:
+        id: { type: string }
+        code: { type: string }
+        code_type: { type: string }
+        item_id: { type: string }
+        source: { type: string, enum: [manual, learned] }
+        vendor: { type: string }
+        created_at: { type: string, format: date-time }
+    EventInput:
+      type: object
+      required: [type, quantity]
+      properties:
+        type: { type: string, enum: [purchase, consume, adjust] }
+        quantity: { type: number, description: Positive for purchase/consume; signed for adjust }
+        unit_price: { type: number }
+        currency: { type: string }
+        vendor: { type: string }
+        code_used: { type: string }
+        note: { type: string }
+        occurred_at: { type: string, format: date-time, description: Defaults to now }
+        allow_negative: { type: boolean, default: false, description: Allow consumption below zero }
+    Event:
+      type: object
+      properties:
+        id: { type: string }
+        item_id: { type: string }
+        type: { type: string, enum: [purchase, consume, adjust, reconcile] }
+        delta: { type: number }
+        quantity_after: { type: number }
+        unit_price: { type: number }
+        currency: { type: string }
+        vendor: { type: string }
+        code_used: { type: string }
+        note: { type: string }
+        occurred_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+    Reconciliation:
+      type: object
+      properties:
+        id: { type: string }
+        item_id: { type: string }
+        homebox_qty: { type: number }
+        counted_qty: { type: number }
+        delta: { type: number }
+        applied: { type: boolean }
+        note: { type: string }
+        created_at: { type: string, format: date-time }
+        event: { $ref: '#/components/schemas/Event' }
+    Chart:
+      type: object
+      properties:
+        interval: { $ref: '#/components/schemas/Interval' }
+        metric: { $ref: '#/components/schemas/Metric' }
+        group_by: { type: string }
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        timezone: { type: string }
+        series:
+          type: array
+          items:
+            type: object
+            properties:
+              key: { type: string }
+              kind: { type: string, enum: [item, category, total] }
+              name: { type: string }
+              points:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    t: { type: string, format: date-time }
+                    v: { type: number }
