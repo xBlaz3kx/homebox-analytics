@@ -57,31 +57,9 @@ The full contract is in [`api/openapi.yaml`](api/openapi.yaml).
 | POST | `/api/v1/reconcile` | Batch stock-take |
 | GET | `/api/v1/reconciliations` | Reconciliation history |
 | POST/DELETE | `/api/v1/codes`, `/api/v1/codes/{id}` | Manage code links; `GET /api/v1/items/{id}/codes` lists them |
-| GET/POST | `/api/v1/charts` | Time series (see below) |
+| GET/POST | `/api/v1/charts` | Time series per item, category or total |
 | POST | `/api/v1/sync` | Sync now |
 | GET | `/healthz`, `/readyz` | Liveness / dependency readiness |
-
-### Charts
-
-```
-GET /api/v1/charts?items=<id,...>&categories=<tagId,...|all>
-                  &group_by=item|category|total
-                  &metric=consumed|purchased|spend|quantity|events
-                  &interval=day|week|month|quarter|year
-                  &from=2026-01-01&to=2026-12-31&timezone=Europe/Ljubljana
-```
-
-- **Scope** is `items` plus the current members of `categories`. `categories=all` selects every tag and defaults to one series per category.
-- **`consumed`** includes negative reconciliation deltas, i.e. stock found missing at a count.
-- **`quantity`** carries the last known level forward through buckets with no events.
-- **Multiple tags:** with `group_by=category`, an item that has several selected tags counts toward each of them.
-
-```bash
-# Monthly consumption per category
-curl 'localhost:8080/api/v1/charts?categories=all&interval=month'
-# Quarterly spend for two items
-curl 'localhost:8080/api/v1/charts?items=<a>,<b>&metric=spend&interval=quarter'
-```
 
 ## Running locally
 
