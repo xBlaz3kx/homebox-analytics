@@ -8,12 +8,12 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/zap"
 
 	"github.com/xBlaz3kx/homebox-analytics/internal/pkg/homebox"
+	"github.com/xBlaz3kx/homebox-analytics/internal/pkg/observability"
 )
 
 var tracer = otel.Tracer("github.com/xBlaz3kx/homebox-analytics/internal/service/ledger")
@@ -56,12 +56,13 @@ func NewService(repo Repository, inventory Inventory, logger *zap.Logger) (*Serv
 func (s *Service) RecordEvent(ctx context.Context, in EventInput) (_ *Event, err error) {
 	ctx, span := tracer.Start(ctx, "ledger.RecordEvent", trace.WithAttributes(
 		attribute.String("item_id", in.ItemID), attribute.String("type", string(in.Type))))
-	defer endSpan(span, &err)
+	defer observability.End(span, &err)
 
 	delta, err := in.Delta()
 	if err != nil {
 		return nil, err
 	}
+	span.SetAttributes(attribute.Float64("delta", delta))
 	if in.OccurredAt.IsZero() {
 		in.OccurredAt = s.now()
 	}
@@ -93,7 +94,7 @@ func (s *Service) RecordEvent(ctx context.Context, in EventInput) (_ *Event, err
 func (s *Service) Reconcile(ctx context.Context, in ReconcileInput) (_ *Reconciliation, err error) {
 	ctx, span := tracer.Start(ctx, "ledger.Reconcile", trace.WithAttributes(
 		attribute.String("item_id", in.ItemID), attribute.Bool("apply", in.Apply)))
-	defer endSpan(span, &err)
+	defer observability.End(span, &err)
 
 	if in.ItemID == "" {
 		return nil, &ValidationError{"item_id is required"}
@@ -125,6 +126,7 @@ func (s *Service) Reconcile(ctx context.Context, in ReconcileInput) (_ *Reconcil
 		return nil, err
 	}
 
+	span.SetAttributes(attribute.Float64("delta", rec.Delta), attribute.Bool("applied", rec.Applied))
 	s.reconcileDelta.Record(ctx, rec.Delta, metric.WithAttributes(attribute.Bool("applied", rec.Applied)))
 	if rec.Event != nil {
 		s.events.Add(ctx, 1, metric.WithAttributes(attribute.String("type", string(EventReconcile))))
@@ -134,25 +136,42 @@ func (s *Service) Reconcile(ctx context.Context, in ReconcileInput) (_ *Reconcil
 
 // ReconcileBatch reconciles each input independently (stock-take); failures don't stop the batch.
 func (s *Service) ReconcileBatch(ctx context.Context, inputs []ReconcileInput) []ReconcileResult {
+	ctx, span := tracer.Start(ctx, "ledger.ReconcileBatch", trace.WithAttributes(attribute.Int("items", len(inputs))))
+	defer span.End()
+
 	results := make([]ReconcileResult, len(inputs))
+	failed := 0
 	for i, in := range inputs {
 		results[i].ItemID = in.ItemID
 		rec, err := s.Reconcile(ctx, in)
 		if err != nil {
 			results[i].Error = err.Error()
+			failed++
 			continue
 		}
 		results[i].Reconciliation = rec
 	}
+	// Per-item failures are reported in the results, so the batch span itself stays OK.
+	span.SetAttributes(attribute.Int("items.failed", failed))
 	return results
 }
 
-func (s *Service) ListEvents(ctx context.Context, f EventFilter) ([]Event, error) {
-	return s.repo.ListEvents(ctx, f)
+func (s *Service) ListEvents(ctx context.Context, f EventFilter) (_ []Event, err error) {
+	ctx, span := tracer.Start(ctx, "ledger.ListEvents", trace.WithAttributes(attribute.String("item_id", f.ItemID)))
+	defer observability.End(span, &err)
+
+	events, err := s.repo.ListEvents(ctx, f)
+	span.SetAttributes(attribute.Int("events", len(events)))
+	return events, err
 }
 
-func (s *Service) ListReconciliations(ctx context.Context, itemID string, limit int) ([]Reconciliation, error) {
-	return s.repo.ListReconciliations(ctx, itemID, limit)
+func (s *Service) ListReconciliations(ctx context.Context, itemID string, limit int) (_ []Reconciliation, err error) {
+	ctx, span := tracer.Start(ctx, "ledger.ListReconciliations", trace.WithAttributes(attribute.String("item_id", itemID)))
+	defer observability.End(span, &err)
+
+	recs, err := s.repo.ListReconciliations(ctx, itemID, limit)
+	span.SetAttributes(attribute.Int("reconciliations", len(recs)))
+	return recs, err
 }
 
 // withItem locks the item, reads its live Homebox quantity, runs fn inside a transaction and pushes
@@ -183,6 +202,8 @@ func (s *Service) withItem(ctx context.Context, itemID string, fn func(tx Tx, cu
 	if err != nil {
 		return err
 	}
+	span := trace.SpanFromContext(ctx)
+	span.SetAttributes(attribute.Float64("quantity.before", current), attribute.Float64("quantity.after", next))
 
 	if next != current {
 		if _, err = s.inventory.SetQuantity(ctx, itemID, next); err != nil {
@@ -193,6 +214,7 @@ func (s *Service) withItem(ctx context.Context, itemID string, fn func(tx Tx, cu
 
 	if err = tx.Commit(ctx); err != nil {
 		if next != current {
+			span.AddEvent("homebox.quantity_restore", trace.WithAttributes(attribute.Float64("quantity", current)))
 			if _, rbErr := s.inventory.SetQuantity(context.WithoutCancel(ctx), itemID, current); rbErr != nil {
 				s.logger.Error("Failed to restore Homebox quantity after commit failure",
 					zap.String("item_id", itemID), zap.Float64("quantity", current), zap.Error(rbErr))
@@ -201,12 +223,4 @@ func (s *Service) withItem(ctx context.Context, itemID string, fn func(tx Tx, cu
 		return fmt.Errorf("commit: %w", err)
 	}
 	return nil
-}
-
-func endSpan(span trace.Span, err *error) {
-	if *err != nil {
-		span.RecordError(*err)
-		span.SetStatus(codes.Error, (*err).Error())
-	}
-	span.End()
 }

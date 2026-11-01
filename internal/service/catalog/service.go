@@ -10,11 +10,12 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/xBlaz3kx/homebox-analytics/internal/pkg/barcode"
 	"github.com/xBlaz3kx/homebox-analytics/internal/pkg/homebox"
+	"github.com/xBlaz3kx/homebox-analytics/internal/pkg/observability"
 	"github.com/xBlaz3kx/homebox-analytics/internal/pkg/search"
 )
 
@@ -79,16 +80,13 @@ func (s *Service) Resolve(ctx context.Context, q LookupQuery) (res LookupResult,
 		if len(res.Candidates) > 0 {
 			span.SetAttributes(attribute.Float64("top_score", res.Candidates[0].Score))
 		}
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-		} else {
+		if err == nil {
 			s.metrics.lookups.Add(ctx, 1, metric.WithAttributes(
 				attribute.String("match_type", string(res.MatchType)),
 				attribute.Bool("confident", res.Confident),
 			))
 		}
-		span.End()
+		observability.End(span, &err)
 	}()
 
 	if q.Code == "" && q.Text == "" {
@@ -115,12 +113,20 @@ func (s *Service) Resolve(ctx context.Context, q LookupQuery) (res LookupResult,
 	return s.hybridMatch(ctx, text, q.Limit)
 }
 
-func (s *Service) exactMatch(ctx context.Context, code barcode.Code, vendor string) (LookupResult, bool, error) {
-	res := LookupResult{MatchType: MatchExact, Code: &code}
+func (s *Service) exactMatch(ctx context.Context, code barcode.Code, vendor string) (res LookupResult, found bool, err error) {
+	ctx, span := tracer.Start(ctx, "catalog.exactMatch", trace.WithAttributes(
+		attribute.String("code_type", string(code.Type)), attribute.String("vendor", vendor)))
+	defer func() {
+		span.SetAttributes(attribute.Bool("found", found), attribute.Int("candidates", len(res.Candidates)))
+		observability.End(span, &err)
+	}()
+
+	res = LookupResult{MatchType: MatchExact, Code: &code}
 
 	link, err := s.codes.Find(ctx, code, vendor)
 	switch {
 	case err == nil:
+		span.SetAttributes(attribute.String("source", "code_link"), attribute.String("item_id", link.ItemID))
 		hits, err := s.points.Scroll(ctx, &search.Filter{Field: fieldItemID, Any: []string{link.ItemID}})
 		if err != nil {
 			return res, false, fmt.Errorf("load linked item: %w", err)
@@ -136,6 +142,7 @@ func (s *Service) exactMatch(ctx context.Context, code barcode.Code, vendor stri
 		return res, false, fmt.Errorf("find code link: %w", err)
 	}
 
+	span.SetAttributes(attribute.String("source", "index"))
 	hits, err := s.points.Scroll(ctx, &search.Filter{Field: fieldCodes, Any: []string{code.Value}})
 	if err != nil {
 		return res, false, fmt.Errorf("find code in index: %w", err)
@@ -151,7 +158,16 @@ func (s *Service) exactMatch(ctx context.Context, code barcode.Code, vendor stri
 	return res, true, nil
 }
 
-func (s *Service) hybridMatch(ctx context.Context, text string, limit int) (LookupResult, error) {
+func (s *Service) hybridMatch(ctx context.Context, text string, limit int) (res LookupResult, err error) {
+	ctx, span := tracer.Start(ctx, "catalog.hybridMatch", trace.WithAttributes(attribute.Int("limit", limit)))
+	defer func() {
+		span.SetAttributes(attribute.Bool("confident", res.Confident), attribute.Int("candidates", len(res.Candidates)))
+		if len(res.Candidates) > 0 {
+			span.SetAttributes(attribute.Float64("top_similarity", res.Candidates[0].Similarity))
+		}
+		observability.End(span, &err)
+	}()
+
 	start := time.Now()
 	hits, err := s.searcher.Search(ctx, text, nil, limit)
 	s.metrics.searchDuration.Record(ctx, time.Since(start).Seconds())
@@ -162,7 +178,7 @@ func (s *Service) hybridMatch(ctx context.Context, text string, limit int) (Look
 		return LookupResult{MatchType: MatchNone, Candidates: []Candidate{}}, nil
 	}
 
-	res := LookupResult{MatchType: MatchHybrid}
+	res = LookupResult{MatchType: MatchHybrid}
 	for _, h := range hits {
 		res.Candidates = append(res.Candidates, toCandidate(h, h.Score))
 	}
@@ -190,8 +206,13 @@ func toCandidate(h search.Hit, score float64) Candidate {
 }
 
 // LinkCode stores a code -> item mapping so future lookups of this code are exact.
-func (s *Service) LinkCode(ctx context.Context, rawCode, vendor, itemID string, source CodeSource) (*CodeLink, error) {
+func (s *Service) LinkCode(ctx context.Context, rawCode, vendor, itemID string, source CodeSource) (_ *CodeLink, err error) {
+	ctx, span := tracer.Start(ctx, "catalog.LinkCode", trace.WithAttributes(
+		attribute.String("item_id", itemID), attribute.String("vendor", vendor), attribute.String("source", string(source))))
+	defer observability.End(span, &err)
+
 	code := barcode.Normalize(rawCode)
+	span.SetAttributes(attribute.String("code_type", string(code.Type)))
 	if code.Value == "" || itemID == "" {
 		return nil, errors.New("code and item_id are required")
 	}
@@ -209,10 +230,18 @@ func (s *Service) LinkCode(ctx context.Context, rawCode, vendor, itemID string, 
 	return s.codes.Upsert(ctx, CodeLink{Code: code.Value, CodeType: code.Type, ItemID: itemID, Source: source, Vendor: vendor})
 }
 
-func (s *Service) ListCodes(ctx context.Context, itemID string) ([]CodeLink, error) {
-	return s.codes.ListByItem(ctx, itemID)
+func (s *Service) ListCodes(ctx context.Context, itemID string) (_ []CodeLink, err error) {
+	ctx, span := tracer.Start(ctx, "catalog.ListCodes", trace.WithAttributes(attribute.String("item_id", itemID)))
+	defer observability.End(span, &err)
+
+	links, err := s.codes.ListByItem(ctx, itemID)
+	span.SetAttributes(attribute.Int("links", len(links)))
+	return links, err
 }
 
-func (s *Service) DeleteCode(ctx context.Context, id string) error {
+func (s *Service) DeleteCode(ctx context.Context, id string) (err error) {
+	ctx, span := tracer.Start(ctx, "catalog.DeleteCode", trace.WithAttributes(attribute.String("link_id", id)))
+	defer observability.End(span, &err)
+
 	return s.codes.Delete(ctx, id)
 }

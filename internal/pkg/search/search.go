@@ -6,7 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"math"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
+	"github.com/xBlaz3kx/homebox-analytics/internal/pkg/observability"
 )
+
+var tracer = otel.Tracer("github.com/xBlaz3kx/homebox-analytics/internal/pkg/search")
 
 // Embedder turns texts into dense vectors.
 type Embedder interface {
@@ -74,10 +82,13 @@ func NewHybridSearch(embedder Embedder, encoder *Encoder, index Index) *HybridSe
 }
 
 // Index embeds and upserts documents.
-func (h *HybridSearch) Index(ctx context.Context, docs []Document) error {
+func (h *HybridSearch) Index(ctx context.Context, docs []Document) (err error) {
 	if len(docs) == 0 {
 		return nil
 	}
+
+	ctx, span := tracer.Start(ctx, "search.Index", trace.WithAttributes(attribute.Int("documents", len(docs))))
+	defer observability.End(span, &err)
 
 	texts := make([]string, len(docs))
 	for i, d := range docs {
@@ -101,7 +112,11 @@ func (h *HybridSearch) Index(ctx context.Context, docs []Document) error {
 }
 
 // Search runs a hybrid query for text.
-func (h *HybridSearch) Search(ctx context.Context, text string, filter *Filter, limit int) ([]Hit, error) {
+func (h *HybridSearch) Search(ctx context.Context, text string, filter *Filter, limit int) (_ []Hit, err error) {
+	ctx, span := tracer.Start(ctx, "search.Search", trace.WithAttributes(
+		attribute.Int("limit", limit), attribute.Bool("filtered", filter != nil)))
+	defer observability.End(span, &err)
+
 	if text == "" {
 		return nil, errors.New("empty search text")
 	}
@@ -123,6 +138,7 @@ func (h *HybridSearch) Search(ctx context.Context, text string, filter *Filter, 
 			hits[i].Similarity = Cosine(dense[0], hits[i].Vector)
 		}
 	}
+	span.SetAttributes(attribute.Int("hits", len(hits)))
 	return hits, nil
 }
 

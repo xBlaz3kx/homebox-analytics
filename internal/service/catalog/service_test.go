@@ -8,6 +8,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"github.com/xBlaz3kx/homebox-analytics/internal/service/catalog/mocks"
 
@@ -180,4 +184,33 @@ func TestSync(t *testing.T) {
 	assert.Equal(t, 1, stats.Touched)
 	assert.Equal(t, 2, stats.Upserted)
 	assert.Equal(t, 1, stats.Deleted)
+}
+
+// The package tracer binds to the first global provider set, so this is the only test that installs one.
+func TestResolveSpans(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))
+
+	d := newDeps(t)
+	d.codes.EXPECT().Find(mock.Anything, mock.Anything, "").Return(nil, catalog.ErrNotFound)
+	d.points.EXPECT().Scroll(mock.Anything, mock.Anything).Return(nil, nil)
+	d.searcher.EXPECT().Search(mock.Anything, "4006381333931", (*search.Filter)(nil), 5).
+		Return([]search.Hit{{ID: "item-3", Similarity: 0.9, Payload: payload("item-3", "Pen")}}, nil)
+
+	_, err := d.svc.Resolve(context.Background(), catalog.LookupQuery{Code: "4006381333931"})
+	require.NoError(t, err)
+
+	spans := map[string]sdktrace.ReadOnlySpan{}
+	for _, s := range rec.Ended() {
+		spans[s.Name()] = s
+	}
+	require.Contains(t, spans, "catalog.Resolve")
+	require.Contains(t, spans, "catalog.exactMatch")
+	require.Contains(t, spans, "catalog.hybridMatch")
+
+	root := spans["catalog.Resolve"].SpanContext().SpanID()
+	assert.Equal(t, root, spans["catalog.exactMatch"].Parent().SpanID())
+	assert.Equal(t, root, spans["catalog.hybridMatch"].Parent().SpanID())
+	assert.Contains(t, spans["catalog.exactMatch"].Attributes(), attribute.Bool("found", false))
+	assert.Contains(t, spans["catalog.hybridMatch"].Attributes(), attribute.Bool("confident", true))
 }

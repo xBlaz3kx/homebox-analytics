@@ -6,10 +6,10 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/zap"
 
+	"github.com/xBlaz3kx/homebox-analytics/internal/pkg/observability"
 	"github.com/xBlaz3kx/homebox-analytics/internal/pkg/search"
 )
 
@@ -27,6 +27,8 @@ func (s *Service) Sync(ctx context.Context) (stats SyncStats, err error) {
 		stats.Duration = time.Since(start)
 		span.SetAttributes(
 			attribute.Int("items.seen", stats.Seen),
+			attribute.Int("items.unchanged", stats.Unchanged),
+			attribute.Int("items.touched", stats.Touched),
 			attribute.Int("items.upserted", stats.Upserted),
 			attribute.Int("items.deleted", stats.Deleted),
 		)
@@ -34,13 +36,10 @@ func (s *Service) Sync(ctx context.Context) (stats SyncStats, err error) {
 		s.metrics.syncItems.Add(ctx, int64(stats.Unchanged+stats.Touched), metric.WithAttributes(attribute.String("result", "unchanged")))
 		s.metrics.syncItems.Add(ctx, int64(stats.Upserted), metric.WithAttributes(attribute.String("result", "upserted")))
 		s.metrics.syncItems.Add(ctx, int64(stats.Deleted), metric.WithAttributes(attribute.String("result", "deleted")))
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-		} else {
+		if err == nil {
 			s.metrics.lastSync.Store(time.Now().Unix())
 		}
-		span.End()
+		observability.End(span, &err)
 	}()
 
 	summaries, err := s.homebox.ListAllEntities(ctx, nil)

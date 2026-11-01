@@ -9,9 +9,9 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 
 	"github.com/xBlaz3kx/homebox-analytics/internal/pkg/homebox"
+	"github.com/xBlaz3kx/homebox-analytics/internal/pkg/observability"
 )
 
 var tracer = otel.Tracer("github.com/xBlaz3kx/homebox-analytics/internal/service/analytics")
@@ -47,13 +47,7 @@ type scopeItem struct {
 // Series builds a chart for the items selected directly and via categories.
 func (s *Service) Series(ctx context.Context, q Query) (_ *Chart, err error) {
 	ctx, span := tracer.Start(ctx, "analytics.Series")
-	defer func() {
-		if err != nil {
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-		}
-		span.End()
-	}()
+	defer observability.End(span, &err)
 
 	loc, err := s.normalize(&q)
 	if err != nil {
@@ -104,6 +98,7 @@ func (s *Service) Series(ctx context.Context, q Query) (_ *Chart, err error) {
 	}
 
 	chart.Series = fold(starts, items, values, initial, q.Metric == MetricQuantity, q.GroupBy)
+	span.SetAttributes(attribute.Int("buckets", len(starts)), attribute.Int("series", len(chart.Series)))
 	return chart, nil
 }
 
@@ -159,7 +154,10 @@ func (s *Service) normalize(q *Query) (*time.Location, error) {
 
 // scope resolves the requested items and categories to items with their chart groups.
 // Category membership is read live from Homebox, so relabeling is reflected immediately.
-func (s *Service) scope(ctx context.Context, q Query) ([]scopeItem, error) {
+func (s *Service) scope(ctx context.Context, q Query) (_ []scopeItem, err error) {
+	ctx, span := tracer.Start(ctx, "analytics.scope")
+	defer observability.End(span, &err)
+
 	entities, err := s.homebox.ListAllEntities(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("list homebox items: %w", err)
@@ -229,6 +227,7 @@ func (s *Service) scope(ctx context.Context, q Query) ([]scopeItem, error) {
 	}
 
 	slices.SortFunc(items, func(a, b scopeItem) int { return strings.Compare(a.id, b.id) })
+	span.SetAttributes(attribute.Int("categories", len(categories)), attribute.Int("items", len(items)))
 	return items, nil
 }
 
