@@ -1,83 +1,33 @@
 # Homebox Analytics
 
-Tracks how fast consumables in [Homebox](https://github.com/sysadminsmedia/homebox) get used up.
+**Know how fast you go through things, not just how many you have left.**
 
-- **Find items by code or text.** Looks up an EAN/UPC/GTIN, a vendor's own SKU, or a receipt line like `BARILLA SPAG 0,5KG`. It tries exact codes first, then falls back to hybrid search (embeddings plus BM25-style lexical matching, fused with RRF).
-- **Ledger.** Records purchases, consumption and adjustments, and writes the resulting quantity back to Homebox. Homebox stays the source of truth for quantity.
-- **Reconciliation.** Compares a stock count with Homebox, one item at a time or as a batch stock-take, and can apply the difference.
-- **Charts.** Returns JSON time series of consumption, purchases, spend or stock level per item, per category (Homebox tag) or as a total. Buckets can be daily, weekly, monthly, quarterly or yearly.
+[Homebox](https://github.com/sysadminsmedia/homebox) is great at telling you what you own and where it is. It's less helpful for the things you use up: coffee, pasta, detergent, filters, batteries.
 
-## Architecture
+## The problem
 
-```
-cmd/service                 entrypoint (cobra), dependency wiring, config file + HBA_* env vars
-internal/pkg/               reusable, domain-agnostic
-  homebox                   Homebox REST client (entities/tags API, >= 0.27)
-  embeddings                OpenAI-compatible /v1/embeddings client (Ollama, Bifrost, OpenAI, ...)
-  qdrant                    search.Index on Qdrant: named dense + IDF sparse vectors, RRF fusion
-  search                    Embedder/Index interfaces, sparse encoder, HybridSearch
-  barcode                   GTIN normalization (EAN-8/13, UPC-A/E, GTIN-14) and code cleanup
-  database                  pgx pool (OTel traced) + embedded goose migrations
-  observability             OTel traces/metrics/logs over OTLP, zap bridge
-internal/service/           domain
-  catalog                   matching, code links, Homebox -> Qdrant sync
-  ledger                    events, reconciliation, quantity push to Homebox
-  analytics                 chart queries
-  api                       HTTP handlers
-```
+Homebox only stores the *current* quantity of an item. When you change it, the old value is gone. That means it can't answer questions like:
 
-Storage:
-- **Postgres** holds only data that exists nowhere else: `events`, `reconciliations` and `item_codes`. `item_codes` stores code-to-item links that were learned or added manually.
-- **Qdrant** stores one point per Homebox item. Each point has its vectors plus a payload with the name, tags, location and normalized codes, and a content hash.
-- There is no item cache: names and category membership are read live from Homebox.
+- How much coffee do we drink in a month?
+- When will we run out of dishwasher tablets?
+- How much did we spend on groceries this quarter, and on what?
+- Is the shelf count actually what Homebox says it is?
 
-### Matching
+Homebox also has no hooks or events for item updates, so other tools (a barcode scanner, a receipt parser, an automation) can't react to changes or record *why* a quantity changed.
 
-1. The code is normalized: UPC-A, GTIN-14 and UPC-E become EAN-13 when the check digit is valid; any other code is upper-cased with separators stripped.
-2. The service looks for a learned or manual link for the vendor, then for the code with no vendor.
-3. It then looks for codes stored on Homebox items: the custom fields named in `homebox.code_fields` (default `EAN`, `UPC`, `Barcode`, `GTIN`, `SKU`), plus model number, serial number and asset ID.
-4. If neither matches, it runs a hybrid search on the text (or on the code itself when no text is given). The result is `confident` when the top hit's cosine similarity is at least `matching.min_similarity` and leads the runner-up by `matching.min_margin`.
+## What Homebox Analytics adds
 
-`POST /api/v1/codes`, or `POST /api/v1/scan` with `"learn": true`, links a vendor code to an item, so the next scan of that code is an exact match.
+Homebox Analytics runs next to your Homebox and becomes the place where stock changes go through.
 
-### Sync
+- **A history of every change.** Each purchase, use and correction is recorded as an event with a time, amount and price. Homebox is kept up to date automatically, so it stays your single source of truth for what's on the shelf.
+- **Scan or paste, it finds the item.** Send a barcode, a store's own product code, or a messy receipt line like `BARILLA SPAG 0,5KG`, and it figures out which Homebox item you mean. When it's unsure, it shows you the candidates, and it remembers your answer for next time.
+- **Stock-takes.** Count what's actually on the shelf, compare it with Homebox, and fix the differences in one go.
+- **Consumption and spending charts.** See usage, purchases, spend and stock levels over time, per item, per category (Homebox tag) or across everything, by day, week, month, quarter or year.
+- **An API for your automations.** Barcode scanners, receipt OCR, Home Assistant or n8n flows can record events through a simple HTTP API instead of editing quantities by hand.
 
-On startup and then every `sync.interval`, the service lists Homebox items and fetches details only for items whose `updatedAt` changed. It re-embeds an item only when its content hash changed, so quantity updates don't trigger re-embedding. Points for items deleted or archived in Homebox are removed. Changing the embedding model re-embeds everything. Changing the vector dimension requires deleting the collection, and startup will tell you so.
+## Quick start
 
-## API
-
-The full contract is in [`api/openapi.yaml`](api/openapi.yaml).
-
-| Method | Path | Purpose |
-|---|---|---|
-| GET | `/api/v1/items/lookup?code=&vendor=&q=&limit=` | Resolve a code and/or text to candidates |
-| POST | `/api/v1/scan` | Resolve and record an event in one call (409 with candidates if not confident) |
-| POST/GET | `/api/v1/items/{id}/events` | Record a `purchase` / `consume` / `adjust`, or list events |
-| POST | `/api/v1/items/{id}/reconcile` | Compare a count with Homebox (`apply: true` to write it) |
-| POST | `/api/v1/reconcile` | Batch stock-take |
-| GET | `/api/v1/reconciliations` | Reconciliation history |
-| POST/DELETE | `/api/v1/codes`, `/api/v1/codes/{id}` | Manage code links; `GET /api/v1/items/{id}/codes` lists them |
-| GET/POST | `/api/v1/charts` | Time series per item, category or total |
-| POST | `/api/v1/sync` | Sync now |
-| GET | `/healthz`, `/readyz` | Liveness / dependency readiness |
-
-## Running locally
-
-```bash
-cd deployments/docker
-docker compose --profile homebox up -d            # postgres, qdrant, ollama (+ model pull), otel-lgtm, homebox
-# create a user and items in Homebox at http://localhost:7745, then:
-HBA_HOMEBOX_USERNAME=you@example.com HBA_HOMEBOX_PASSWORD=... docker compose up -d --build service
-curl localhost:8080/readyz
-```
-
-- **Config:** settings are in [`config/service.config.yaml`](config/service.config.yaml). Any key can be overridden with an env var, e.g. `HBA_EMBEDDINGS_BASE_URL` for `embeddings.base_url`.
-- **Bifrost:** run `docker compose --profile bifrost up -d bifrost`, then set `embeddings.base_url: http://bifrost:8080/v1` and `embeddings.model: ollama/nomic-embed-text`.
-- **Observability:** Grafana is at http://localhost:3000. It shows traces (HTTP, pgx, Qdrant gRPC, embeddings HTTP and domain spans), logs with trace IDs, and the `hba_*` metrics.
-
-## Deploying with Docker
-
-[`deployments/docker/production`](deployments/docker/production) runs the published image (`ghcr.io/xblaz3kx/homebox-analytics`) with Postgres, Qdrant and optionally Ollama. It expects Homebox to already be running elsewhere.
+You need Docker and a running Homebox (v0.27 or newer).
 
 ```bash
 cd deployments/docker/production
@@ -86,18 +36,21 @@ docker compose up -d
 curl localhost:8080/readyz
 ```
 
-- **Configuration:** everything is set through `.env`. Postgres and Qdrant aren't published on host ports, and data is kept in named volumes.
-- **Homebox URL:** `HBA_HOMEBOX_URL` must be reachable from inside the container, so `localhost` won't work.
-- **Embeddings:** `COMPOSE_PROFILES=ollama` (the default) runs Ollama and pulls the model. To use an existing Ollama, Bifrost or OpenAI endpoint instead, clear that line and set `HBA_EMBEDDINGS_BASE_URL`.
-- **Image tags:** CI publishes `latest` from `main` and semver tags from `v*` tags. Pin `HBA_IMAGE_TAG` to a version for repeatable deploys.
+This starts the service with everything it needs (Postgres, Qdrant and a local Ollama for item matching). Make sure `HBA_HOMEBOX_URL` points to an address reachable from inside the container, not `localhost`.
 
-## Development
+See [docs/deployment.md](docs/deployment.md) for configuration options and image tags.
 
-```bash
-go test ./...                                                   # unit tests
-go test -tags integration -run TestEndToEnd ./internal/service/ # Postgres + Qdrant via testcontainers
-golangci-lint run ./...
-mockery                                                         # regenerate mocks (internal/service/*/mocks)
-```
+## Documentation
 
-The text that gets embedded for each item is built from `internal/service/catalog/templates/document.tmpl`.
+- [Deployment](docs/deployment.md): production setup and configuration
+- [API](docs/api.md): endpoints and the OpenAPI contract
+- [Architecture](docs/architecture.md): components, storage, matching and sync in detail
+- [Development](docs/development.md): running locally, tests and tooling
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) and the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+## License
+
+See [LICENSE.md](LICENSE.md).
