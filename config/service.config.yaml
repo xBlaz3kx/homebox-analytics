@@ -1,6 +1,12 @@
 http:
   address: ":8080"
 
+# Model Context Protocol server (Streamable HTTP) for LLM clients. No auth of its own:
+# expose it only where the REST API is also trusted.
+mcp:
+  enabled: true
+  path: "/mcp"
+
 homebox:
   url: "http://homebox:7745"
   # Prefer an API key (Homebox > Profile > API keys); username/password also works.

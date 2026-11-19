@@ -11,6 +11,7 @@ import (
 
 type Config struct {
 	HTTP          HTTP          `mapstructure:"http"`
+	MCP           MCP           `mapstructure:"mcp"`
 	Homebox       Homebox       `mapstructure:"homebox"`
 	Postgres      Postgres      `mapstructure:"postgres"`
 	Qdrant        Qdrant        `mapstructure:"qdrant"`
@@ -23,6 +24,12 @@ type Config struct {
 type HTTP struct {
 	Address         string        `mapstructure:"address"`
 	ShutdownTimeout time.Duration `mapstructure:"shutdown_timeout"`
+}
+
+// MCP serves the Model Context Protocol endpoint on the HTTP server.
+type MCP struct {
+	Enabled bool   `mapstructure:"enabled"`
+	Path    string `mapstructure:"path"`
 }
 
 type Homebox struct {
@@ -86,6 +93,9 @@ func (c *Config) Validate() error {
 	if c.Homebox.APIKey == "" && (c.Homebox.Username == "" || c.Homebox.Password == "") {
 		errs = append(errs, errors.New("homebox.api_key or homebox.username+password is required"))
 	}
+	if c.MCP.Enabled && (!strings.HasPrefix(c.MCP.Path, "/") || strings.HasPrefix(c.MCP.Path, "/api/") || c.MCP.Path == "/") {
+		errs = append(errs, errors.New("mcp.path must start with / and not collide with the REST API"))
+	}
 	if c.Postgres.DSN == "" {
 		errs = append(errs, errors.New("postgres.dsn is required"))
 	}
@@ -106,6 +116,8 @@ func setDefaults(v *viper.Viper) {
 
 	v.SetDefault("http.address", ":8080")
 	v.SetDefault("http.shutdown_timeout", 15*time.Second)
+	v.SetDefault("mcp.enabled", true)
+	v.SetDefault("mcp.path", "/mcp")
 	v.SetDefault("homebox.url", "http://localhost:7745")
 	v.SetDefault("homebox.code_fields", []string{"EAN", "UPC", "Barcode", "GTIN", "SKU"})
 	v.SetDefault("homebox.timeout", 15*time.Second)

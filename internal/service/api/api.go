@@ -16,6 +16,7 @@ import (
 	"github.com/xBlaz3kx/homebox-analytics/internal/service/analytics"
 	"github.com/xBlaz3kx/homebox-analytics/internal/service/catalog"
 	"github.com/xBlaz3kx/homebox-analytics/internal/service/ledger"
+	"github.com/xBlaz3kx/homebox-analytics/internal/service/scan"
 )
 
 type Catalog interface {
@@ -48,12 +49,13 @@ type Handler struct {
 	catalog   Catalog
 	ledger    Ledger
 	analytics Analytics
+	scanner   *scan.Service
 	checks    []Check
 	logger    *zap.Logger
 }
 
 func NewHandler(c Catalog, l Ledger, a Analytics, checks []Check, logger *zap.Logger) http.Handler {
-	h := &Handler{catalog: c, ledger: l, analytics: a, checks: checks, logger: logger}
+	h := &Handler{catalog: c, ledger: l, analytics: a, scanner: scan.NewService(c, l), checks: checks, logger: logger}
 
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -61,18 +63,37 @@ func NewHandler(c Catalog, l Ledger, a Analytics, checks []Check, logger *zap.Lo
 	router.GET("/readyz", h.ready)
 
 	v1 := router.Group("/api/v1", otelgin.Middleware("homebox-analytics"))
-	v1.GET("/items/lookup", h.lookup)
-	v1.GET("/items/:id/codes", h.listCodes)
-	v1.POST("/codes", h.linkCode)
-	v1.DELETE("/codes/:id", h.deleteCode)
-	v1.POST("/items/:id/events", h.recordEvent)
-	v1.GET("/items/:id/events", h.listEvents)
-	v1.POST("/scan", h.scan)
-	v1.POST("/items/:id/reconcile", h.reconcile)
-	v1.POST("/reconcile", h.reconcileBatch)
-	v1.GET("/reconciliations", h.listReconciliations)
-	v1.GET("/charts", h.chartQuery)
-	v1.POST("/charts", h.chartBody)
+
+	items := v1.Group("/items")
+	{
+		items.GET("/lookup", h.lookup)
+
+		item := items.Group("/:id")
+		item.GET("/codes", h.listCodes)
+		item.GET("/events", h.listEvents)
+		item.POST("/events", h.recordEvent)
+		item.POST("/reconcile", h.reconcile)
+	}
+
+	codes := v1.Group("/codes")
+	{
+		codes.POST("", h.linkCode)
+		codes.DELETE("/:id", h.deleteCode)
+	}
+
+	stock := v1.Group("")
+	{
+		stock.POST("/scan", h.scan)
+		stock.POST("/reconcile", h.reconcileBatch)
+		stock.GET("/reconciliations", h.listReconciliations)
+	}
+
+	charts := v1.Group("/charts")
+	{
+		charts.GET("", h.chartQuery)
+		charts.POST("", h.chartBody)
+	}
+
 	v1.POST("/sync", h.sync)
 
 	return router

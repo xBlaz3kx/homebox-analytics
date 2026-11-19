@@ -24,6 +24,7 @@ Homebox Analytics runs next to your Homebox and becomes the place where stock ch
 - **Stock-takes.** Count what's actually on the shelf, compare it with Homebox, and fix the differences in one go.
 - **Consumption and spending charts.** See usage, purchases, spend and stock levels over time, per item, per category (Homebox tag) or across everything, by day, week, month, quarter or year.
 - **An API for your automations.** Barcode scanners, receipt OCR, Home Assistant or n8n flows can record events through a simple HTTP API instead of editing quantities by hand.
+- **Talk to your inventory.** A built-in MCP server lets Claude, n8n agents and other AI assistants look up items, log what you bought or used, run stock-takes and answer "how much coffee do we drink?".
 
 ## Quick start
 
@@ -44,6 +45,7 @@ See [docs/deployment.md](docs/deployment.md) for configuration options and image
 
 - [Deployment](docs/deployment.md): production setup and configuration
 - [API](docs/api.md): endpoints and the OpenAPI contract
+- [MCP server](docs/mcp.md): connecting AI assistants and the available tools
 - [Architecture](docs/architecture.md): components, storage, matching and sync in detail
 - [Development](docs/development.md): running locally, tests and tooling
 

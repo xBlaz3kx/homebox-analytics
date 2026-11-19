@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	semconv "go.opentelemetry.io/otel/semconv/v1.43.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type Config struct {
@@ -65,7 +67,11 @@ func New(cfg Config) (*Client, error) {
 
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Transport: otelhttp.NewTransport(http.DefaultTransport), Timeout: cfg.Timeout}
+		httpClient = &http.Client{
+			Transport: otelhttp.NewTransport(http.DefaultTransport,
+				otelhttp.WithSpanOptions(trace.WithAttributes(semconv.ServicePeerName("homebox")))),
+			Timeout: cfg.Timeout,
+		}
 	}
 
 	return &Client{baseURL: u, http: httpClient, apiKey: cfg.APIKey, username: cfg.Username, password: cfg.Password}, nil

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/zap"
@@ -123,4 +124,30 @@ func TestChartQueryParsing(t *testing.T) {
 	var body errorBody
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
 	assert.Contains(t, body.Error, "items or categories")
+}
+
+func TestRoutes(t *testing.T) {
+	h := NewHandler(&fakeCatalog{}, &fakeLedger{}, &fakeAnalytics{}, nil, zap.NewNop()).(*gin.Engine)
+
+	var got []string
+	for _, r := range h.Routes() {
+		got = append(got, r.Method+" "+r.Path)
+	}
+	assert.ElementsMatch(t, []string{
+		"GET /healthz",
+		"GET /readyz",
+		"GET /api/v1/items/lookup",
+		"GET /api/v1/items/:id/codes",
+		"GET /api/v1/items/:id/events",
+		"POST /api/v1/items/:id/events",
+		"POST /api/v1/items/:id/reconcile",
+		"POST /api/v1/codes",
+		"DELETE /api/v1/codes/:id",
+		"POST /api/v1/scan",
+		"POST /api/v1/reconcile",
+		"GET /api/v1/reconciliations",
+		"GET /api/v1/charts",
+		"POST /api/v1/charts",
+		"POST /api/v1/sync",
+	}, got)
 }
