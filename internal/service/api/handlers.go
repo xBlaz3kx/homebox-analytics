@@ -1,6 +1,7 @@
 package api
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/xBlaz3kx/homebox-analytics/internal/service/analytics"
 	"github.com/xBlaz3kx/homebox-analytics/internal/service/catalog"
 	"github.com/xBlaz3kx/homebox-analytics/internal/service/ledger"
+	"github.com/xBlaz3kx/homebox-analytics/internal/service/scan"
 )
 
 func queryInt(c *gin.Context, name string) (int, error) {
@@ -164,12 +166,6 @@ type scanRequest struct {
 	ledger.EventInput
 }
 
-type scanResponse struct {
-	Match catalog.LookupResult `json:"match"`
-	Event *ledger.Event        `json:"event,omitempty"`
-	Link  *catalog.CodeLink    `json:"link,omitempty"`
-}
-
 // scan resolves a code/text and records the event in one call. Without a confident match it
 // returns 409 with the candidates so the client can pick one and use /items/{id}/events.
 func (h *Handler) scan(c *gin.Context) {
@@ -179,42 +175,18 @@ func (h *Handler) scan(c *gin.Context) {
 		return
 	}
 
-	match, err := h.catalog.Resolve(c.Request.Context(), catalog.LookupQuery{Code: req.Code, Vendor: req.Vendor, Text: req.Text})
+	res, err := h.scanner.Scan(c.Request.Context(), scan.Request{
+		Code: req.Code, Vendor: req.Vendor, Text: req.Text, Learn: req.Learn, Event: req.EventInput,
+	})
+	if errors.Is(err, scan.ErrNoConfidentMatch) {
+		c.JSON(http.StatusConflict, errorBody{Error: err.Error(), Data: res})
+		return
+	}
 	if err != nil {
 		h.writeError(c, err)
 		return
 	}
-	best, ok := match.Best()
-	if !ok {
-		c.JSON(http.StatusConflict, errorBody{Error: "no confident match", Data: scanResponse{Match: match}})
-		return
-	}
-
-	in := req.EventInput
-	in.ItemID = best.ItemID
-	if in.CodeUsed == "" {
-		in.CodeUsed = req.Code
-	}
-	if in.Vendor == "" {
-		in.Vendor = req.Vendor
-	}
-
-	ev, err := h.ledger.RecordEvent(c.Request.Context(), in)
-	if err != nil {
-		h.writeError(c, err)
-		return
-	}
-	resp := scanResponse{Match: match, Event: ev}
-
-	if req.Learn && req.Code != "" && match.MatchType == catalog.MatchHybrid {
-		link, err := h.catalog.LinkCode(c.Request.Context(), req.Code, req.Vendor, best.ItemID, catalog.SourceLearned)
-		if err != nil {
-			h.writeError(c, err)
-			return
-		}
-		resp.Link = link
-	}
-	c.JSON(http.StatusCreated, resp)
+	c.JSON(http.StatusCreated, res)
 }
 
 func (h *Handler) reconcile(c *gin.Context) {

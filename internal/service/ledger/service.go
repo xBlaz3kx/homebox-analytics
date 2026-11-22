@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -145,7 +146,7 @@ func (s *Service) ReconcileBatch(ctx context.Context, inputs []ReconcileInput) [
 		results[i].ItemID = in.ItemID
 		rec, err := s.Reconcile(ctx, in)
 		if err != nil {
-			results[i].Error = err.Error()
+			results[i].Error = s.itemError(in.ItemID, err)
 			failed++
 			continue
 		}
@@ -154,6 +155,18 @@ func (s *Service) ReconcileBatch(ctx context.Context, inputs []ReconcileInput) [
 	// Per-item failures are reported in the results, so the batch span itself stays OK.
 	span.SetAttributes(attribute.Int("items.failed", failed))
 	return results
+}
+
+// itemError is the per-item message of a failed batch entry. Caller errors (invalid input, unknown
+// item, insufficient stock) are reported as-is; anything else is logged and reported generically so
+// upstream (Homebox, database) details don't reach clients.
+func (s *Service) itemError(itemID string, err error) string {
+	var ve *ValidationError
+	if errors.As(err, &ve) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrInsufficientQuantity) {
+		return err.Error()
+	}
+	s.logger.Error("Reconcile failed", zap.String("item_id", itemID), zap.Error(err))
+	return "internal error"
 }
 
 func (s *Service) ListEvents(ctx context.Context, f EventFilter) (_ []Event, err error) {
@@ -190,7 +203,9 @@ func (s *Service) withItem(ctx context.Context, itemID string, fn func(tx Tx, cu
 
 	entity, err := s.inventory.GetEntity(ctx, itemID)
 	if err != nil {
-		if errors.Is(err, homebox.ErrNotFound) {
+		// Homebox answers 400 for IDs it can't parse; to the caller that is an unknown item.
+		var apiErr *homebox.APIError
+		if errors.Is(err, homebox.ErrNotFound) || (errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusBadRequest) {
 			return fmt.Errorf("item %s: %w", itemID, ErrNotFound)
 		}
 		s.homeboxErrors.Add(ctx, 1, metric.WithAttributes(attribute.String("operation", "get_entity")))

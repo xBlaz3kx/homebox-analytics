@@ -16,7 +16,9 @@ internal/service/           domain
   catalog                   matching, code links, Homebox -> Qdrant sync
   ledger                    events, reconciliation, quantity push to Homebox
   analytics                 chart queries
+  scan                      resolve + record in one step (shared by api and mcp)
   api                       HTTP handlers
+  mcp                       MCP server (Streamable HTTP at /mcp), tool descriptions in templates/
 ```
 
 ## Storage

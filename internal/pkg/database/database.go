@@ -22,7 +22,8 @@ func Connect(ctx context.Context, dsn string) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse postgres dsn: %w", err)
 	}
-	cfg.ConnConfig.Tracer = otelpgx.NewTracer()
+	// "query"/"prepare" prefixes tell apart a statement's prepare span from its query span.
+	cfg.ConnConfig.Tracer = otelpgx.NewTracer(otelpgx.WithQuerySpanNamePrefix())
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {

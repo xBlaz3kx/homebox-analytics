@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.uber.org/zap"
 
 	"github.com/xBlaz3kx/homebox-analytics/internal/pkg/database"
@@ -20,6 +21,7 @@ import (
 	"github.com/xBlaz3kx/homebox-analytics/internal/service/api"
 	"github.com/xBlaz3kx/homebox-analytics/internal/service/catalog"
 	"github.com/xBlaz3kx/homebox-analytics/internal/service/ledger"
+	"github.com/xBlaz3kx/homebox-analytics/internal/service/mcp"
 )
 
 // run wires dependencies, starts the sync loop and HTTP server, and blocks until ctx is cancelled.
@@ -128,9 +130,25 @@ func run(ctx context.Context, cfg *Config, version string, baseLogger *zap.Logge
 	}
 
 	gin.SetMode(gin.ReleaseMode)
+	mux := http.NewServeMux()
+	mux.Handle("/", api.NewHandler(catalogSvc, ledgerSvc, analyticsSvc, checks, logger))
+
+	if cfg.MCP.Enabled {
+		mcpHandler, err := mcp.NewHandler(
+			mcp.Config{Version: version, CodeFields: cfg.Homebox.CodeFields},
+			mcp.Deps{Catalog: catalogSvc, Ledger: ledgerSvc, Analytics: analyticsSvc, Homebox: hb},
+			logger,
+		)
+		if err != nil {
+			return fmt.Errorf("setup mcp: %w", err)
+		}
+		mux.Handle(cfg.MCP.Path, otelhttp.NewHandler(mcpHandler, "mcp"))
+		logger.Info("MCP server enabled", zap.String("path", cfg.MCP.Path))
+	}
+
 	server := &http.Server{
 		Addr:              cfg.HTTP.Address,
-		Handler:           api.NewHandler(catalogSvc, ledgerSvc, analyticsSvc, checks, logger),
+		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 

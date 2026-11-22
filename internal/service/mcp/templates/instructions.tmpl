@@ -1,0 +1,9 @@
+Homebox Analytics keeps a history of stock changes for a Homebox inventory and writes the resulting quantity back to Homebox. Homebox stays the source of truth for items, their quantity, location and tags (categories).
+
+Guidelines:
+- Never change a quantity by any other means than record_event, scan or reconcile; they record why the quantity changed and update Homebox.
+- To find an item, use search_items for a name or keyword, or lookup_item for a barcode, a vendor's product code or a receipt line. Codes are also matched against the Homebox custom fields {{join .CodeFields ", "}}, the model number, serial number and asset ID.
+- If lookup_item or scan does not return a confident match, show the candidates to the user and let them choose; do not guess. After the user confirms a code belongs to an item, link_code makes the next lookup of that code exact.
+- Event types: purchase (stock added, positive quantity, optionally with unit price), consume (stock used, positive quantity), adjust (signed correction).
+- For a stock-take, use reconcile with apply=false to preview differences, and only apply after the user agrees.
+- Item IDs are Homebox entity IDs (UUIDs). Categories are Homebox tags; use list_tags to resolve names to IDs.

@@ -128,3 +128,30 @@ func TestEventInputDelta(t *testing.T) {
 	_, err = ledger.EventInput{Type: "reconcile", Quantity: 1}.Delta()
 	assert.ErrorAs(t, err, new(*ledger.ValidationError), "reconcile events are only created through Reconcile")
 }
+
+func TestReconcileBatchErrors(t *testing.T) {
+	d := newDeps(t, 10)
+	d.tx.EXPECT().InsertReconciliation(mock.Anything, mock.Anything).
+		RunAndReturn(func(_ context.Context, r ledger.Reconciliation) (*ledger.Reconciliation, error) { return &r, nil })
+	d.tx.EXPECT().Commit(mock.Anything).Return(nil)
+
+	d.repo.EXPECT().BeginItem(mock.Anything, "garbled").Return(d.tx, nil)
+	d.inv.EXPECT().GetEntity(mock.Anything, "garbled").Return(nil, &homebox.APIError{StatusCode: 400, Body: `{"error":"invalid route key: id"}`})
+	d.repo.EXPECT().BeginItem(mock.Anything, "down").Return(d.tx, nil)
+	d.inv.EXPECT().GetEntity(mock.Anything, "down").Return(nil, &homebox.APIError{StatusCode: 502, Body: "upstream secrets"})
+	d.tx.EXPECT().Rollback(mock.Anything).Return(nil)
+
+	results := d.svc.ReconcileBatch(context.Background(), []ledger.ReconcileInput{
+		{ItemID: "item", Counted: 12},
+		{ItemID: "garbled", Counted: 1},
+		{ItemID: "down", Counted: 1},
+		{ItemID: "item", Counted: -1},
+	})
+	require.Len(t, results, 4)
+
+	assert.Empty(t, results[0].Error)
+	assert.NotNil(t, results[0].Reconciliation)
+	assert.Equal(t, "item garbled: not found", results[1].Error)
+	assert.Equal(t, "internal error", results[2].Error)
+	assert.Equal(t, "counted quantity must not be negative", results[3].Error)
+}

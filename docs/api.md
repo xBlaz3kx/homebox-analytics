@@ -14,5 +14,6 @@ The full contract is in [`api/openapi.yaml`](../api/openapi.yaml).
 | GET/POST | `/api/v1/charts` | Time series per item, category or total |
 | POST | `/api/v1/sync` | Sync now |
 | GET | `/healthz`, `/readyz` | Liveness / dependency readiness |
+| POST | `/mcp` | MCP server for LLM clients, see [mcp.md](mcp.md) |
 
 See [architecture.md](architecture.md) for how lookups are matched and how quantities flow back to Homebox.
